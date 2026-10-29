@@ -15,7 +15,7 @@ export class RunwayClient{
  constructor({apiKey,fetchFn=globalThis.fetch,sleepFn=delay,now=Date.now,random=Math.random,onEvent=()=>{}}={}){if(typeof apiKey!=='string'||!apiKey.trim()||/[\r\n]/.test(apiKey))throw Error('RUNWAYML_API_SECRET is required in the server environment');Object.assign(this,{apiKey,fetchFn,sleepFn,now,random,onEvent});}
  emit(event,details={}){this.onEvent({event,...details});}
  api(method,route,body){const headers={Authorization:`Bearer ${this.apiKey}`,'X-Runway-Version':API_VERSION};if(body!==undefined)headers['Content-Type']='application/json';return this.fetchFn(`${API_BASE}${route}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(30000)});}
- async create(p){p=validatePayload(p);this.emit('SUBMIT_STARTED',{model:p.model,duration:p.duration??5,ratio:p.ratio??'auto_720p'});let r;try{r=await this.api('POST','/image_to_video',p);}catch{this.emit('SUBMISSION_UNKNOWN');throw new SubmissionUnknownError();}if(r.status>=500){this.emit('SUBMISSION_UNKNOWN',{httpStatus:r.status});throw new SubmissionUnknownError();}if(!r.ok)throw new APIError(r.status);let result;try{result=await r.json();checkId(result.id);}catch{throw new SubmissionUnknownError();}try{this.emit('TASK_CREATED',{taskId:result.id,estimatedCredits:result.estimatedCost?.credits??null});}catch(e){e.taskId=result.id;throw e;}return result;}
+ async create(p,{onCreated}={}){p=validatePayload(p);this.emit('SUBMIT_STARTED',{model:p.model,duration:p.duration??5,ratio:p.ratio??'auto_720p'});let r;try{r=await this.api('POST','/image_to_video',p);}catch{this.emit('SUBMISSION_UNKNOWN');throw new SubmissionUnknownError();}if(r.status>=500){this.emit('SUBMISSION_UNKNOWN',{httpStatus:r.status});throw new SubmissionUnknownError();}if(!r.ok)throw new APIError(r.status);let result;try{result=await r.json();checkId(result.id);}catch{throw new SubmissionUnknownError();}try{if(onCreated)await onCreated(result);this.emit('TASK_CREATED',{taskId:result.id,estimatedCredits:result.estimatedCost?.credits??null});}catch(e){e.taskId=result.id;throw e;}return result;}
  async get(id,{deadline=Infinity}={}){
   checkId(id);for(let attempt=0;attempt<5;attempt++){
    if(this.now()>=deadline)throw new WaitTimeoutError(id);let r;try{r=await this.api('GET',`/tasks/${id}`);}catch{r=null;}
@@ -41,7 +41,13 @@ export class RunwayClient{
   try{await access(destination);throw Error('Destination already exists; choose a new output directory');}catch(e){if(e.code!=='ENOENT')throw e;}
   this.emit('DOWNLOAD_STARTED',{file:path.basename(destination)});
   // API key must never be forwarded to the media host.
-  const r=await this.fetchFn(url,{redirect:'follow',signal:AbortSignal.timeout(180000)});
+  let current=url,r;
+  for(let redirects=0;;redirects++){
+   r=await this.fetchFn(current,{redirect:'manual',signal:AbortSignal.timeout(180000)});
+   if(![301,302,303,307,308].includes(r.status))break;
+   const location=r.headers.get('location');if(!location||redirects>=5)throw Error('Invalid media redirect chain');
+   const next=new URL(location,current);if(next.protocol!=='https:'||next.username||next.password)throw Error('Media redirects must remain HTTPS');current=next.href;
+  }
   if(!r.ok||!r.body)throw Error(`Media download failed (HTTP ${r.status})`);if(r.url&&new URL(r.url).protocol!=='https:')throw Error('Media redirect did not remain HTTPS');
   const type=(r.headers.get('content-type')??'').split(';')[0].trim().toLowerCase();if(!['video/mp4','application/octet-stream'].includes(type))throw Error('Unexpected media content type');
   if(Number(r.headers.get('content-length'))>maxBytes)throw Error('Media exceeds download size limit');

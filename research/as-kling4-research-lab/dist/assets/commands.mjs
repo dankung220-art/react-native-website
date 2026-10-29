@@ -1,0 +1,10 @@
+import{validatePayload,estimateCost}from'./core.mjs';
+/** Exported commands never interpolate prompt or media into executable shell. */
+export function buildCommand(language,input){
+ const p=validatePayload(input),budget=Math.ceil(estimateCost(p).credits*1.15/10)*10;
+ if(language==='json')return JSON.stringify(p,null,2);
+ if(language==='node')return `// Save request.json; key stays in RUNWAYML_API_SECRET.\n// Run from the downloaded project root.\nimport { main } from './src/cli.mjs';\n\ntry {\n  await main([\n    'run', '--live', '--allow-spend',\n    '--budget', '${budget}',\n    '--request', 'request.json',\n  ]);\n} catch (error) {\n  console.error(error.name, error.message);\n  if (error.taskId) console.error('Resume task:', error.taskId);\n  process.exitCode = error.name === 'WaitTimeoutError' ? 3 : 1;\n}\n\n// CLI records receipt/audit, polls the SAME task, and saves ALL outputs.\n// For recovery use resume, never run again for the same experiment.\n`;
+ if(language!=='curl')throw Error('Unknown command language');
+ const wire=`curl --request POST \\\n  'https://api.dev.runwayml.com/v1/image_to_video' \\\n  --header "Authorization: Bearer $RUNWAYML_API_SECRET" \\\n  --header 'X-Runway-Version: 2024-11-06' \\\n  --header 'Content-Type: application/json' \\\n  --data-binary @request.json --output create.json\n\ncurl "https://api.dev.runwayml.com/v1/tasks/$TASK_ID" \\\n  --header "Authorization: Bearer $RUNWAYML_API_SECRET" \\\n  --header 'X-Runway-Version: 2024-11-06'`;
+ return `# Save request.json first. Key stays in the environment.\n# ONE executable submission; the script handles GET polling + all outputs.\nALLOW_SPEND=1 bash scripts/run-curl.sh \\\n  request.json runs/curl-01 ${budget}\n\n# RESEARCH REFERENCE ONLY: requests below are deliberately commented.\n# They describe what the script sends; they do not execute a second POST.\n${wire.split('\n').map(line=>'# '+line).join('\n')}\n\n# Poll >=5s apart. SUCCEEDED -> output[] -> download, without API auth.\n`;
+}
